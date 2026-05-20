@@ -50,7 +50,6 @@ phase_cleanup() {
     "device/motorola/${DEVICE}"
     "vendor/motorola/${DEVICE}"
     "kernel/motorola/sm8550"
-    "frameworks/base"
   )
 
   for p in "${paths[@]}"; do
