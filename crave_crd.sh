@@ -1,218 +1,112 @@
 #!/bin/bash
-
-set -o pipefail
+# ============================================================================
+# crDroid 16.0 | Motorola rtwo (Snapdragon 8 Gen 2 / sm8550)
+# ============================================================================
+set -eo pipefail
 IFS=$'\n\t'
 
-# ── Configuration ──────────────────────────────────────────────────────────────
-ROM_NAME="${ROM_NAME:-crDroid}"
-ROM_MANIFEST="${ROM_MANIFEST:-https://github.com/crdroidandroid/android.git}"
-MANIFEST_BRANCH="${MANIFEST_BRANCH:-16.0}"
+# ── Logging ──────────────────────────────────────────────────────────────────
+mkdir -p "${PWD}/build_logs"
+BUILD_TS=$(date +%Y%m%d_%H%M%S)
+LOG_FILE="${PWD}/build_logs/rtwo_${BUILD_TS}.log"
+echo "Build log: ${LOG_FILE}"
 
-DEVICE="rtwo"
-BUILD_TYPE="userdebug"
-LUNCH_TARGET="lineage_rtwo-bp4a-userdebug"
+# ── STEP 1: Targeted Cleanup ─────────────────────────────────────────────────
+echo "[1/7] Cleaning device-specific directories..."
+rm -rf .repo/local_manifests
 
-LOCAL_MANIFEST_REPO="https://github.com/mas4112/local_manifests"
-LOCAL_MANIFEST_BRANCH="lineage-23.2"
+rm -rf device/motorola/rtwo
+rm -rf device/motorola/sm8550-common
+rm -rf vendor/motorola/rtwo
+rm -rf vendor/motorola/sm8550-common
+rm -rf kernel/motorola/sm8550
+rm -rf kernel/motorola/sm8550-devicetrees
+rm -rf kernel/motorola/sm8550-modules
+rm -rf hardware/motorola
 
-BUILD_HOSTNAME="${BUILD_HOSTNAME:-crave}"
-OUT_DIR="out/target/product/${DEVICE}"
-START_TIME=$(date +%s)
+# Clear only the device output
+rm -rf out/target/product/rtwo
 
-# ── Logging ────────────────────────────────────────────────────────────────────
-BUILD_LOG_DIR="${PWD}/build_logs"
-mkdir -p "$BUILD_LOG_DIR"
-TS="$(date +%s)"
-BUILD_LOG="${BUILD_LOG_DIR}/build_${DEVICE}_${TS}.log"
-ERROR_LOG="${BUILD_LOG_DIR}/error_${DEVICE}_${TS}.log"
-SYNC_LOG="${BUILD_LOG_DIR}/sync_${DEVICE}_${TS}.log"
+# ── STEP 2: Repo Init ────────────────────────────────────────────────────────
+echo "[2/7] Initializing crDroid 16.0 manifest over LOS 22.1 base..."
+repo init \
+  -u https://github.com/crdroidandroid/android.git \
+  -b 16.0 \
+  --depth=1 \
+  --git-lfs
 
-log()     { echo "[$(date '+%F %T')] $*"          | tee -a "$BUILD_LOG"; }
-warn()    { echo "[$(date '+%F %T')] WARN: $*"    | tee -a "$BUILD_LOG"; }
-err()     { echo "[$(date '+%F %T')] ERROR: $*"   | tee -a "$ERROR_LOG" >&2; }
-success() { echo "[$(date '+%F %T')] SUCCESS: $*" | tee -a "$BUILD_LOG"; }
+# ── STEP 3: Sync Base Sources ────────────────────────────────────────────────
+echo "[3/7] Syncing platform sources..."
+if [ -f /opt/crave/resync.sh ]; then
+  /opt/crave/resync.sh
+else
+  repo sync -c --force-sync --no-clone-bundle --no-tags -j$(nproc --all)
+fi
 
-# Fail handler
-on_fail() {
-  err "Pipeline encountered an unrecoverable crash point. Halting."
+# ── STEP 4: Force Clang Toolchain Replacement ────────────────────────────────
+echo "[4/7] Replacing Clang toolchain with pinned android-16.0.0_r4 snapshot..."
+rm -rf prebuilts/clang/host/linux-x86
+git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+  -b android-16.0.0_r4 \
+  --depth=1 \
+  prebuilts/clang/host/linux-x86
+
+CLANG_LATEST=$(ls -dt prebuilts/clang/host/linux-x86/clang-r* 2>/dev/null | head -1)
+echo "Active toolchain: $(basename "${CLANG_LATEST:-not found}")"
+
+# ── STEP 5: Clone Device Sources ─────────────────────────────────────────────
+echo "[5/7] Cloning device trees and vendor blobs..."
+git clone https://github.com/mas4112/android_device_motorola_rtwo \
+  -b lineage-23.2 --depth=1 device/motorola/rtwo
+
+git clone https://github.com/LineageOS/android_device_motorola_sm8550-common \
+  -b lineage-23.2 --depth=1 device/motorola/sm8550-common
+
+git clone https://github.com/LineageOS/android_kernel_motorola_sm8550 \
+  -b lineage-23.2 --depth=1 kernel/motorola/sm8550
+
+git clone https://github.com/LineageOS/android_kernel_motorola_sm8550-devicetrees \
+  -b lineage-23.2 --depth=1 kernel/motorola/sm8550-devicetrees
+
+git clone https://github.com/LineageOS/android_kernel_motorola_sm8550-modules \
+  -b lineage-23.2 --depth=1 kernel/motorola/sm8550-modules
+
+git clone https://github.com/TheMuppets/proprietary_vendor_motorola_sm8550-common \
+  -b lineage-23.2 --depth=1 vendor/motorola/sm8550-common
+
+git clone https://github.com/TheMuppets/proprietary_vendor_motorola_rtwo \
+  -b lineage-23.2 --depth=1 vendor/motorola/rtwo
+
+git clone https://github.com/LineageOS/android_hardware_motorola \
+  -b lineage-23.2 --depth=1 hardware/motorola
+
+# ── STEP 6: Build Environment ────────────────────────────────────────────────
+echo "[6/7] Configuring build environment..."
+export TARGET_ENABLE_BLUR=false
+export WITH_ADB_INSECURE=true
+export SELINUX_IGNORE_NEVERALLOWS=true
+export WITH_GMS=false
+export BUILD_HOSTNAME="crave"
+
+# shellcheck source=/dev/null
+source build/envsetup.sh
+lunch lineage_rtwo-bp4a-userdebug
+
+mka installclean || true
+
+# ── STEP 7: Build ────────────────────────────────────────────────────────────
+echo "[7/7] Starting compilation... (log: ${LOG_FILE})"
+set +e
+mka bacon 2>&1 | tee "${LOG_FILE}"
+BUILD_EXIT="${PIPESTATUS[0]}"
+set -e
+
+# ── Output Verification ──────────────────────────────────────────────────────
+ZIP=$(ls -t out/target/product/rtwo/*.zip 2>/dev/null | head -1)
+if [ -n "$ZIP" ] && [ "${BUILD_EXIT:-0}" -eq 0 ]; then
+  echo ""
+  echo "✅ Build successful: $(basename "$ZIP") ($(du -h "$ZIP" | cut -f1))"
+else
+  echo "❌ Build failed or no output ZIP found — check ${LOG_FILE}"
   exit 1
-}
-
-# ==============================================================================
-# PHASE 1 — Cleanup device-scoped artifacts
-# ==============================================================================
-phase_cleanup() {
-  log "[1/5] Cleaning device-scoped artifacts for ${DEVICE}"
-
-  local paths=(
-    ".repo/local_manifests"
-    "${OUT_DIR}"
-    "device/motorola/${DEVICE}"
-    "vendor/motorola/${DEVICE}"
-    "kernel/motorola/sm8550"
-  )
-
-  for p in "${paths[@]}"; do
-    if [ -e "$p" ]; then
-      log "  Removing: $p"
-      rm -rf "$p"
-    fi
-  done
-
-  success "Cleanup complete"
-}
-
-# ==============================================================================
-# PHASE 2 — Manifest init + local manifests injection
-# ==============================================================================
-phase_manifest_init() {
-  log "[2/5] Manifest initialization"
-
-  if [ ! -d ".repo" ]; then
-    log "  .repo not found — running repo init"
-    if ! repo init -u "${ROM_MANIFEST}" -b "${MANIFEST_BRANCH}" --git-lfs --depth=1 \
-         2>&1 | tee -a "$SYNC_LOG"; then
-      err "repo init failed"
-      on_fail
-    fi
-  else
-    log "  .repo present — skipping repo init"
-  fi
-
-  log "  Cloning local manifests: ${LOCAL_MANIFEST_REPO} (${LOCAL_MANIFEST_BRANCH})"
-  rm -rf .repo/local_manifests
-  if ! git clone -b "${LOCAL_MANIFEST_BRANCH}" --depth 1 \
-       "${LOCAL_MANIFEST_REPO}" .repo/local_manifests 2>&1 | tee -a "$SYNC_LOG"; then
-    err "Local manifests clone failed"
-    on_fail
-  fi
-
-  success "Manifest ready"
-}
-
-# ==============================================================================
-# PHASE 3 — Source sync + targeted clang force-sync
-# ==============================================================================
-phase_sync() {
-  log "[3/5] Syncing source"
-  local SYNC_START SYNC_END SYNC_DIFF SYNC_TIME
-
-  SYNC_START=$(date +%s)
-
-  if [ -x /opt/crave/resync.sh ]; then
-    log "  Using Crave resync wrapper"
-    if ! /opt/crave/resync.sh 2>&1 | tee -a "$SYNC_LOG"; then
-      err "Crave resync wrapper failed"
-      on_fail
-    fi
-  else
-    log "  Using standard repo sync"
-    repo sync -c --no-tags --no-clone-bundle 2>&1 | tee -a "$SYNC_LOG" || \
-      warn "repo sync reported warnings — continuing"
-  fi
-
-  # Force-sync clang to fix stale-version toolchain failures
-  log "  Force-syncing prebuilts/clang/host/linux-x86"
-  if ! repo sync -c --force-sync --no-tags --no-clone-bundle \
-       prebuilts/clang/host/linux-x86 2>&1 | tee -a "$SYNC_LOG"; then
-    warn "Clang force-sync had issues — build may still succeed"
-  else
-    local CLANG_VER
-    CLANG_VER=$(ls -dt prebuilts/clang/host/linux-x86/clang-r* 2>/dev/null | head -1 | xargs basename 2>/dev/null)
-    [ -n "$CLANG_VER" ] && log "  Toolchain: ${CLANG_VER}"
-  fi
-
-  SYNC_END=$(date +%s)
-  SYNC_DIFF=$((SYNC_END - SYNC_START))
-  if [ "$SYNC_DIFF" -ge 3600 ]; then
-    SYNC_TIME="$((SYNC_DIFF/3600))h $(((SYNC_DIFF%3600)/60))min"
-  else
-    SYNC_TIME="$((SYNC_DIFF/60)) min"
-  fi
-
-  success "Sync complete (${SYNC_TIME})"
-}
-
-# ==============================================================================
-# PHASE 4 — Build environment setup
-# ==============================================================================
-phase_env_setup() {
-  log "[4/5] Setting up build environment"
-
-  if [ ! -f "build/envsetup.sh" ]; then
-    err "build/envsetup.sh not found — sync may have failed"
-    on_fail
-  fi
-
-  export TARGET_ENABLE_BLUR=false
-  export WITH_ADB_INSECURE=true
-  export SELINUX_IGNORE_NEVERALLOWS=true
-  export WITH_GMS=false
-  export TARGET_USES_PICO_GAPPS=true
-  export BUILD_HOSTNAME="${BUILD_HOSTNAME}"
-
-  # shellcheck source=/dev/null
-  source build/envsetup.sh
-
-  log "  Lunching: ${LUNCH_TARGET}"
-  if ! lunch "${LUNCH_TARGET}"; then
-    err "lunch failed for: ${LUNCH_TARGET}"
-    on_fail
-  fi
-
-  log "  Running installclean"
-  mka installclean 2>&1 | tee -a "$BUILD_LOG" || warn "installclean reported issues"
-
-  success "Environment ready"
-}
-
-# ==============================================================================
-# PHASE 5 — Compile
-# ==============================================================================
-phase_build() {
-  log "[5/5] Building ${ROM_NAME} for ${DEVICE}"
-
-  local BUILD_START
-  BUILD_START=$(date +%s)
-
-  if ! mka bacon 2>&1 | tee -a "$BUILD_LOG"; then
-    err "mka bacon failed"
-    on_fail
-  fi
-
-  if grep -q -E "ninja failed|failed to build some targets" "$BUILD_LOG"; then
-    err "Ninja reported failures in build log"
-    on_fail
-  fi
-
-  local BUILD_END DUR BUILD_TIME
-  BUILD_END=$(date +%s)
-  DUR=$((BUILD_END - BUILD_START))
-  if [ "$DUR" -ge 3600 ]; then
-    BUILD_TIME="$((DUR/3600))h $(((DUR%3600)/60))min"
-  else
-    BUILD_TIME="$((DUR/60)) min"
-  fi
-
-  success "Build completed in ${BUILD_TIME}"
-}
-
-# ==============================================================================
-# MAIN
-# ==============================================================================
-main() {
-  log "=========================================="
-  log " CRAVE FOSS ROM BUILD — ${ROM_NAME} / ${DEVICE}"
-  log " Manifest : ${ROM_MANIFEST} (${MANIFEST_BRANCH})"
-  log " Target   : ${LUNCH_TARGET}"
-  log "=========================================="
-
-  phase_cleanup
-  phase_manifest_init
-  phase_sync
-  phase_env_setup
-  phase_build
-}
-
-main "$@"
-exit $?
+fi
