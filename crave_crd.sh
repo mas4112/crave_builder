@@ -25,7 +25,7 @@ rm -rf kernel/motorola/sm8550-modules
 rm -rf hardware/motorola
 
 # Clear only the device output
-rm -rf out/target/product/rtwo
+# rm -rf out/target/product/rtwo
 
 # ── STEP 2: Repo Init ────────────────────────────────────────────────────────
 echo "[2/7] Initializing crDroid 16.0 manifest over LOS 22.1 base..."
@@ -82,6 +82,8 @@ git clone https://github.com/LineageOS/android_hardware_motorola \
 
 # ── STEP 6: Build Environment ────────────────────────────────────────────────
 echo "[6/7] Configuring build environment..."
+export USE_CCACHE=0
+export CCACHE_EXEC=""
 export TARGET_ENABLE_BLUR=false
 export WITH_ADB_INSECURE=true
 export SELINUX_IGNORE_NEVERALLOWS=true
